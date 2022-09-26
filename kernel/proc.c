@@ -696,3 +696,31 @@ procdump(void)
     printf("\n");
   }
 }
+
+int
+unusedproc(void)
+{
+  struct proc *p;
+  int cnt = 0;
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    // 如果进程p的状态为UNUSED, 则计数器加1
+    if(p->state == UNUSED)
+      cnt++;
+  }
+  return cnt;
+}
+
+int
+freefd(void)
+{
+  struct proc *p = myproc();
+  int cnt = NOFILE;
+
+  for(int fd = 0; fd < NOFILE; fd++){
+    // 如果fd是打开的文件, 则计数器减1
+    if(p->ofile[fd])
+      cnt--;
+  }
+  return cnt;
+}

@@ -80,3 +80,22 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+
+// 计算剩余的内存空间
+// 返回空闲内存空间大小, 单位Byte
+uint64
+freemem(void)
+{
+  struct run *r;
+  uint64 cnt = 0;
+  
+  acquire(&kmem.lock);
+  r = kmem.freelist;
+  while(r){
+    cnt++;
+    r = r->next;
+  }
+  release(&kmem.lock);
+
+  return cnt * PGSIZE;
+}
