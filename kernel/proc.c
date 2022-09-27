@@ -697,6 +697,7 @@ procdump(void)
   }
 }
 
+// 计算空闲进程数量
 int
 unusedproc(void)
 {
@@ -711,11 +712,12 @@ unusedproc(void)
   return cnt;
 }
 
+// 计算可用文件描述符数量
 int
 freefd(void)
 {
   struct proc *p = myproc();
-  int cnt = NOFILE;
+  int cnt = NOFILE; // 初始值是全部文件描述符的数量
 
   for(int fd = 0; fd < NOFILE; fd++){
     // 如果fd是打开的文件, 则计数器减1

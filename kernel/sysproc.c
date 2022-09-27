@@ -121,10 +121,12 @@ sys_sysinfo(void)
   if(argaddr(0, &user_info) < 0)
     return -1;
   
+  // 在kernel地址空间中填写sysinfo结构体
   kernel_info.freemem = freemem();
   kernel_info.nproc = unusedproc();
   kernel_info.freefd = freefd();
 
+  // 复制到user地址空间
   if(copyout(p->pagetable, user_info, (char *)&kernel_info, sizeof(kernel_info)) < 0)
     return -1;
   

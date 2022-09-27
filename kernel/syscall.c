@@ -170,7 +170,7 @@ syscall(void)
     int ret_val = syscalls[num](); // 系统调用返回值
     int arg0 = p->trapframe->a0; // 系统调用的第一个参数
     p->trapframe->a0 = ret_val;
-    // mask的第num位表示trace系统调用syscall_names[num], 为1则满足if条件, 打印系统调用信息
+    // mask的第num位的比特值表示是否追踪系统调用号为num的系统调用; 如果为1则需要追踪, 此时打印系统调用信息
     if(p->mask & (1 << num)) {
       printf("%d: %s(%d) -> %d\n",
               p->pid, syscall_names[num], arg0, ret_val);
