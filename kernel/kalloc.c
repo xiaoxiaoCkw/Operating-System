@@ -18,16 +18,19 @@ struct run {
   struct run *next;
 };
 
-struct {
+struct kmem {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+};
+
+struct kmem kmems[NCPU]; // 每个CPU使用独立的链表
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  for(int i = 0; i < NCPU; i++)
+    initlock(&kmems[i].lock, "kmem");
+  freerange(end, (void*)PHYSTOP); // 将内存分配给调用此函数的CPU
 }
 
 void
@@ -56,10 +59,15 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off(); // 关闭中断
+  int cpu_id = cpuid(); // 获取运行进程的CPUid
+  pop_off(); // 打开中断
+
+  // 将释放的物理内存页添加到运行此函数的CPU的链表中
+  acquire(&kmems[cpu_id].lock);
+  r->next = kmems[cpu_id].freelist;
+  kmems[cpu_id].freelist = r;
+  release(&kmems[cpu_id].lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,11 +78,34 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
+  push_off(); // 关闭中断
+  int cpu_id = cpuid(); // 获取运行进程的CPUid
+  pop_off(); // 打开中断
+
+  acquire(&kmems[cpu_id].lock);
+  // 优先分配当前CPU的freelist中的内存块
+  r = kmems[cpu_id].freelist;
   if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+    kmems[cpu_id].freelist = r->next;
+  else {
+    // 当前CPU没有空闲内存块，则从其他CPU的freelist中窃取内存块
+    for(int i = 0; i < NCPU; i++) {
+      if(i == cpu_id)
+        continue;
+      
+      acquire(&kmems[i].lock);
+      r = kmems[i].freelist;
+      if(r) {
+        // i号CPU有空闲内存块，窃取内存块
+        kmems[i].freelist = r->next;
+        release(&kmems[i].lock);
+        break;
+      }
+      // 否则，释放锁继续查找下一个CPU
+      release(&kmems[i].lock);
+    }
+  }
+  release(&kmems[cpu_id].lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
