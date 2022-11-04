@@ -450,3 +450,31 @@ test_pagetable()
   uint64 gsatp = MAKE_SATP(kernel_pagetable);
   return satp != gsatp;
 }
+
+void
+vmprint(pagetable_t pagetable)
+{
+  // 根页表
+  printf("page table %p\n", pagetable);
+  // there are 2^9 = 512 PTEs in a page table.
+  for (int i = 0; i < 512; i++) {
+    pte_t pte1 = pagetable[i]; // 根页表目录项
+    if (pte1 & PTE_V) {
+      pagetable_t pt2 = (pagetable_t)PTE2PA(pte1); // 第二级页表的物理地址
+      printf("||%d: pte %p pa %p\n", i, pte1, pt2);
+      for (int j = 0; j < 512; j++) {
+        pte_t pte2 = pt2[j]; // 第二级页表目录项
+        if (pte2 & PTE_V) {
+          pagetable_t pt3 = (pagetable_t)PTE2PA(pte2); // 第三级页表的物理地址
+          printf("|| ||%d: pte %p pa %p\n", j, pte2, pt3);
+          for (int k = 0; k < 512; k++) {
+            pte_t pte3 = pt3[k]; // 第三级页表目录项
+            if (pt3[k] & PTE_V) {
+              printf("|| || ||%d: pte %p pa %p\n", k, pte3, PTE2PA(pte3));
+            }
+          }
+        }
+      }
+    }
+  }
+}
