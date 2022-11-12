@@ -37,6 +37,8 @@ procinit(void)
       char *pa = kalloc();
       if(pa == 0)
         panic("kalloc");
+      // 拷贝内核栈的物理地址pa
+      p->kstack_pa = (uint64)pa;
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
@@ -121,6 +123,18 @@ found:
     return 0;
   }
 
+  // 为进程分配内核页表
+  p->kernel_pagetable = kpagetable(p);
+  if (p->kernel_pagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // 创建内核栈映射
+  if (mappages(p->kernel_pagetable, p->kstack, PGSIZE, p->kstack_pa, PTE_R | PTE_W) != 0)
+    panic("create kernel stack mapping");
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -141,6 +155,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kernel_pagetable)
+    freekwalk(p->kernel_pagetable);
+  p->kernel_pagetable = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -225,6 +242,9 @@ userinit(void)
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
 
+  // 第一个进程也需要将用户页表映射到内核页表
+  mapupage2kpage(p->pagetable, p->kernel_pagetable, 0, p->sz);
+
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
@@ -238,10 +258,11 @@ userinit(void)
 int
 growproc(int n)
 {
-  uint sz;
+  uint sz, oldsz;
   struct proc *p = myproc();
 
   sz = p->sz;
+  oldsz = p->sz;
   if(n > 0){
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
@@ -250,6 +271,10 @@ growproc(int n)
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
   p->sz = sz;
+
+  // 将改变后的进程页表同步到内核页表中
+  mapupage2kpage(p->pagetable, p->kernel_pagetable, oldsz, p->sz);
+  
   return 0;
 }
 
@@ -276,6 +301,9 @@ fork(void)
   np->sz = p->sz;
 
   np->parent = p;
+
+  // 将改变后的进程页表同步到内核页表中
+  mapupage2kpage(np->pagetable, np->kernel_pagetable, 0, np->sz);
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -473,7 +501,15 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // 切换进程内核页表
+        w_satp(MAKE_SATP(p->kernel_pagetable));
+        sfence_vma();
+
         swtch(&c->context, &p->context);
+
+        // 全局内核页表
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -696,4 +732,40 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+/*
+ * 把进程的用户页表映射到内核页表中
+ */
+int
+mapupage2kpage(pagetable_t user_page, pagetable_t kernel_page, uint64 oldsz, uint64 newsz)
+{
+  // 根页表不存在
+  if (!user_page || !kernel_page)
+    return -1;
+  
+  if (oldsz < newsz) {
+    // 进程用户空间增大
+    oldsz = PGROUNDUP(oldsz);
+    for (uint64 va = oldsz; va < newsz; va += PGSIZE) {
+      // va是页对齐的虚拟地址
+      pte_t* user_pte = walk(user_page, va, 0); // 用户页表页表项地址
+      if (user_pte && (*user_pte & PTE_V)) {
+        pte_t* kernel_pte = walk(kernel_page, va, 1); // 创建内核页表页表项, 返回页表项地址
+        *kernel_pte = (*user_pte) & (~PTE_U); // 把进程的用户页表映射到内核页表中
+      } else {
+        return -1;
+      }
+    }
+  } else {
+    // 进程用户空间减小
+    oldsz = PGROUNDDOWN(oldsz);
+    for (uint64 va = oldsz; va > newsz; va -= PGSIZE) {
+      // va是页对齐的虚拟地址
+      pte_t* kernel_pte = walk(kernel_page, va, 0); // 内核页表页表项地址
+      if (kernel_pte)
+        *kernel_pte = 0; // 清空页表项
+    }
+  }
+  return 0;
 }

@@ -47,6 +47,47 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
+/*
+ * 为进程创建一个新的内核独立页表
+ */
+pagetable_t 
+kpagetable(struct proc *p)
+{
+  pagetable_t k_pagetable = (pagetable_t) kalloc();
+  memset(k_pagetable, 0, PGSIZE);
+
+  // uart registers
+  if (mappages(k_pagetable, UART0, PGSIZE, UART0, PTE_R | PTE_W) != 0)
+    panic("create kernel pagetable");
+
+  // virtio mmio disk interface
+  if (mappages(k_pagetable, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W) != 0)
+    panic("create kernel pagetable");
+
+  // 不要映射CLINT 
+  // if (mappages(k_pagetable, CLINT, 0x10000, CLINT, PTE_R | PTE_W) != 0)
+  //   panic("create kernel pagetable");
+
+  // PLIC
+  if (mappages(k_pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W) != 0)
+    panic("create kernel pagetable");
+
+  // map kernel text executable and read-only.
+  if (mappages(k_pagetable, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X) != 0)
+    panic("create kernel pagetable");
+
+  // map kernel data and the physical RAM we'll make use of.
+  if (mappages(k_pagetable, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W) != 0)
+    panic("create kernel pagetable");
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  if (mappages(k_pagetable, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X) != 0)
+    panic("create kernel pagetable");
+
+  return k_pagetable;
+}
+
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
 void
@@ -290,6 +331,39 @@ freewalk(pagetable_t pagetable)
   kfree((void*)pagetable);
 }
 
+/*
+ * 释放页表但不释放叶子页表指向的物理页帧
+ */
+void 
+freekwalk(pagetable_t kpagetable)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for (int i = 0; i < 512; i++) {
+    pte_t pte1 = kpagetable[i]; // 根页表页表项
+    if (pte1 & PTE_V) {
+      pagetable_t kpagetable2 = (pagetable_t)PTE2PA(pte1); // 第二级页表
+      for (int j = 0; j < 512; j++) {
+        pte_t pte2 = kpagetable2[j]; // 第二级页表页表项
+        if (pte2 & PTE_V) {
+          pagetable_t kpagetable3 = (pagetable_t)PTE2PA(pte2); // 第三级页表
+          for (int k = 0; k < 512; k++) {
+            pte_t pte3 = kpagetable3[k]; // 第三级页表页表项
+            if (pte3 & PTE_V) {
+              // 不释放指向的物理页帧
+              kpagetable3[k] = 0; // 清空第三级页表页表项
+            }
+          }
+          kfree((void *)kpagetable3); // 释放第三级页表
+          kpagetable2[j] = 0; // 清空第二级页表页表项
+        }
+      }
+      kfree((void *)kpagetable2); // 释放第二级页表
+      kpagetable[i] = 0; // 清空根页表页表项
+    }
+  }
+  kfree((void *)kpagetable); // 释放根页表
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void
@@ -380,23 +454,26 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+  // 用函数 copyin_new() 代替 copyin()
+  // 由于实现用户页表映射到内核页表时将 User 位置0, 所以不需要借助 sstatus 寄存器
+  return copyin_new(pagetable, dst, srcva, len);
+  // uint64 n, va0, pa0;
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+  // while(len > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > len)
+  //     n = len;
+  //   memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  //   len -= n;
+  //   dst += n;
+  //   srcva = va0 + PGSIZE;
+  // }
+  // return 0;
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -406,40 +483,43 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  // 用函数 copyinstr_new() 代替 copyinstr()
+  // 由于实现用户页表映射到内核页表时将 User 位置0, 所以不需要借助 sstatus 寄存器
+  return copyinstr_new(pagetable, dst, srcva, max);
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+  // while(got_null == 0 && max > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > max)
+  //     n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
+  //   char *p = (char *) (pa0 + (srcva - va0));
+  //   while(n > 0){
+  //     if(*p == '\0'){
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
 
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if(got_null){
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
 }
 
 // check if use global kpgtbl or not 

@@ -116,8 +116,13 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  // 将改变后的进程页表同步到内核页表中
+  if (mapupage2kpage(p->pagetable, p->kernel_pagetable, 0, p->sz) < 0)
+    goto bad;
+
   if (p->pid == 1)
     vmprint(p->pagetable);
+  
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
